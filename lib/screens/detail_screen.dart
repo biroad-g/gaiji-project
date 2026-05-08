@@ -28,7 +28,13 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _isSaving = false;
 
   final List<String> _presetCategories = [
-    '仏教用語', '人名', '地名', '戒名', '法名', 'その他',
+    '1、なまえ（人・場所・もの）',
+    '2、うごき（動作・様子・程度）',
+    '3、つなぎ（～の・～だ・助詞）',
+    '4、くらし（自然・時間・仏教）',
+    '5、しるし（記号・合体した文字）',
+    '6、梵字',
+    '7、その他',
   ];
 
   @override
