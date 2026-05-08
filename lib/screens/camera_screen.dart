@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
+import 'package:image/image.dart' as img;
 import '../services/image_service.dart';
 import '../services/database_service.dart';
 import '../models/gaiji_entry.dart';
@@ -374,6 +375,9 @@ class _CropWidgetState extends State<_CropWidget> {
   Offset? _dragStart;
   String? _dragHandle; // 'tl','tr','bl','br','move'
 
+  // LayoutBuilder で取得した画像表示エリアのサイズ（_applyCrop で使用）
+  Size _cropAreaSize = Size.zero;
+
   static const double _handleSize = 24.0;
 
   @override
@@ -397,6 +401,12 @@ class _CropWidgetState extends State<_CropWidget> {
             builder: (context, constraints) {
               final w = constraints.maxWidth;
               final h = constraints.maxHeight;
+              // サイズを保存（_applyCrop での BoxFit.contain 計算に使用）
+              if (_cropAreaSize.width != w || _cropAreaSize.height != h) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (mounted) setState(() => _cropAreaSize = Size(w, h));
+                });
+              }
               return GestureDetector(
                 onPanStart: (d) => _onPanStart(d, w, h),
                 onPanUpdate: (d) => _onPanUpdate(d, w, h),
@@ -470,7 +480,7 @@ class _CropWidgetState extends State<_CropWidget> {
     final t = _top * h;
     final r = _right * w;
     final b = _bottom * h;
-    final hs = _handleSize;
+    const hs = _handleSize;
 
     return [
       // 角ハンドル
@@ -512,7 +522,7 @@ class _CropWidgetState extends State<_CropWidget> {
     final t = _top * h;
     final r = _right * w;
     final b = _bottom * h;
-    final hs = _handleSize;
+    const hs = _handleSize;
 
     String? handle;
     if ((x - l).abs() < hs && (y - t).abs() < hs) {
@@ -568,9 +578,75 @@ class _CropWidgetState extends State<_CropWidget> {
   }
 
   Future<void> _applyCrop() async {
-    // クロップ範囲を記録してコールバック
-    // 現環境ではバイトをそのまま渡す（画像バイトのクロップは複雑なため）
-    widget.onCropped(widget.imageBytes);
+    // ① 元画像をデコードしてピクセルサイズを取得
+    final decoded = img.decodeImage(widget.imageBytes);
+    if (decoded == null) {
+      widget.onCropped(widget.imageBytes);
+      return;
+    }
+    final imgW = decoded.width.toDouble();
+    final imgH = decoded.height.toDouble();
+
+    // ② LayoutBuilder で保存した画像表示エリアのサイズを使用
+    //    (_left/_top/_right/_bottom は w×h に対する正規化値)
+    final w = _cropAreaSize.width;
+    final h = _cropAreaSize.height;
+
+    if (w <= 0 || h <= 0) {
+      widget.onCropped(widget.imageBytes);
+      return;
+    }
+
+    // ③ BoxFit.contain のレターボックスオフセットを計算
+    //    画像アスペクト比とウィジェットアスペクト比を比較して
+    //    実際に画像が描画される矩形 (renderedRect) を求める
+    final widgetAspect = w / h;
+    final imageAspect = imgW / imgH;
+
+    double renderedW, renderedH, offsetX, offsetY;
+    if (imageAspect > widgetAspect) {
+      // 横長画像 → 横幅フィット、上下にレターボックス
+      renderedW = w;
+      renderedH = w / imageAspect;
+      offsetX = 0;
+      offsetY = (h - renderedH) / 2;
+    } else {
+      // 縦長画像 → 縦幅フィット、左右にレターボックス
+      renderedH = h;
+      renderedW = h * imageAspect;
+      offsetX = (w - renderedW) / 2;
+      offsetY = 0;
+    }
+
+    // ④ 正規化ウィジェット座標 → 画像ピクセル座標に変換
+    //    _left/_top 等は w×h 全体に対する正規化値
+    //    まずウィジェットピクセル座標に戻し、レターボックス分を引いて
+    //    renderedW×renderedH に対する相対位置を求め、imgW×imgH にスケーリング
+    double selLeft   = _left   * w;
+    double selTop    = _top    * h;
+    double selRight  = _right  * w;
+    double selBottom = _bottom * h;
+
+    // レターボックスオフセットを除去（rendered image 内の座標に変換）
+    selLeft   = (selLeft   - offsetX).clamp(0.0, renderedW);
+    selTop    = (selTop    - offsetY).clamp(0.0, renderedH);
+    selRight  = (selRight  - offsetX).clamp(0.0, renderedW);
+    selBottom = (selBottom - offsetY).clamp(0.0, renderedH);
+
+    // 画像ピクセル座標にスケーリング
+    final px = (selLeft   / renderedW * imgW).round().clamp(0, decoded.width  - 1);
+    final py = (selTop    / renderedH * imgH).round().clamp(0, decoded.height - 1);
+    final pw = ((selRight  - selLeft) / renderedW * imgW).round()
+                 .clamp(1, decoded.width  - px);
+    final ph = ((selBottom - selTop)  / renderedH * imgH).round()
+                 .clamp(1, decoded.height - py);
+
+    // ⑤ クロップ実行
+    final cropped = img.copyCrop(decoded, x: px, y: py, width: pw, height: ph);
+
+    // ⑥ PNG エンコードして返す
+    final croppedBytes = Uint8List.fromList(img.encodePng(cropped));
+    widget.onCropped(croppedBytes);
   }
 }
 
