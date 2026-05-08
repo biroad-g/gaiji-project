@@ -1,10 +1,14 @@
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:share_plus/share_plus.dart';
+import 'package:image/image.dart' as img;
+import 'package:path_provider/path_provider.dart';
 import '../models/gaiji_entry.dart';
 import '../services/database_service.dart';
 import '../services/image_service.dart';
+import '../services/download_service.dart';
 
 class DetailScreen extends StatefulWidget {
   final GaijiEntry entry;
@@ -62,6 +66,113 @@ class _DetailScreenState extends State<DetailScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('共有に失敗しました: $e'), backgroundColor: Colors.red),
+        );
+      }
+    }
+  }
+
+  // -------------------------------------------------------
+  // JPEGとしてエクスポート
+  // Web  : ブラウザのダウンロードダイアログで保存
+  // Mobile: 一時ファイルに書き出し share_plus で共有
+  // -------------------------------------------------------
+  Future<void> _exportAsJpeg() async {
+    // ① 元バイト列を取得
+    Uint8List? sourceBytes;
+    if (kIsWeb) {
+      sourceBytes = _entry.imageBytes;
+    } else if (_entry.imagePath.isNotEmpty) {
+      final f = File(_entry.imagePath);
+      if (f.existsSync()) sourceBytes = await f.readAsBytes();
+    }
+    // imageBytes フォールバック
+    sourceBytes ??= _entry.imageBytes;
+
+    if (sourceBytes == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('画像データが見つかりません'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
+      return;
+    }
+
+    // ② 処理中インジケーター表示
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Row(
+            children: [
+              SizedBox(
+                width: 18, height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2, color: Colors.white,
+                ),
+              ),
+              SizedBox(width: 12),
+              Text('JPEGに変換中...'),
+            ],
+          ),
+          duration: Duration(seconds: 10),
+        ),
+      );
+    }
+
+    try {
+      // ③ PNG/任意形式 → JPEG 変換（品質85）
+      final decoded = img.decodeImage(sourceBytes);
+      if (decoded == null) throw Exception('画像のデコードに失敗しました');
+      final jpegBytes = Uint8List.fromList(
+        img.encodeJpg(decoded, quality: 85),
+      );
+
+      // ファイル名: "{名前}_{YYYYMMDD}.jpg"
+      final dateStr =
+          '${_entry.createdAt.year}'
+          '${_entry.createdAt.month.toString().padLeft(2, '0')}'
+          '${_entry.createdAt.day.toString().padLeft(2, '0')}';
+      // ファイル名に使えない文字を除去
+      final safeName = _entry.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
+      final fileName = '${safeName}_$dateStr.jpg';
+
+      if (kIsWeb) {
+        // ④-A Web: ブラウザのダウンロードダイアログ
+        triggerBrowserDownload(jpegBytes, fileName);
+        if (mounted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Text('「$fileName」をダウンロードしました'),
+              backgroundColor: const Color(0xFF5D7A6B),
+            ),
+          );
+        }
+      } else {
+        // ④-B Mobile: 一時ファイルに保存して share_plus で共有
+        final dir = await getTemporaryDirectory();
+        final filePath = '${dir.path}/$fileName';
+        await File(filePath).writeAsBytes(jpegBytes);
+
+        if (mounted) {
+          ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        }
+        await Share.shareXFiles(
+          [XFile(filePath, mimeType: 'image/jpeg')],
+          text: '外字：${_entry.name}',
+          subject: '外字画像 ($fileName)',
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).hideCurrentSnackBar();
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('エクスポートに失敗しました: $e'),
+            backgroundColor: Colors.red,
+          ),
         );
       }
     }
@@ -187,6 +298,12 @@ class _DetailScreenState extends State<DetailScreen> {
         title: Text(_isEditing ? '編集中' : _entry.name),
         actions: [
           if (!_isEditing) ...[
+            // JPEGエクスポートボタン（Web: ダウンロード / Mobile: 共有）
+            IconButton(
+              icon: const Icon(Icons.download),
+              tooltip: kIsWeb ? 'JPEGでダウンロード' : 'JPEGで共有・保存',
+              onPressed: _exportAsJpeg,
+            ),
             if (!kIsWeb)
               IconButton(
                 icon: const Icon(Icons.share),
@@ -318,16 +435,34 @@ class _DetailScreenState extends State<DetailScreen> {
           value: _formatDate(_entry.createdAt),
         ),
         const SizedBox(height: 24),
-        if (!kIsWeb)
-          ElevatedButton.icon(
+        // JPEGエクスポートボタン（Web: ダウンロード / Mobile: 共有）
+        ElevatedButton.icon(
+          onPressed: _exportAsJpeg,
+          icon: const Icon(Icons.download),
+          label: const Text(
+            kIsWeb ? 'JPEGでダウンロード（PCに保存）' : 'JPEGで共有・保存',
+            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+          ),
+          style: ElevatedButton.styleFrom(
+            padding: const EdgeInsets.symmetric(vertical: 14),
+            backgroundColor: const Color(0xFF8B4513),
+          ),
+        ),
+        if (!kIsWeb) ...[
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
             onPressed: _shareImage,
-            icon: const Icon(Icons.share),
-            label: const Text('他のアプリへ共有・エクスポート', style: TextStyle(fontSize: 15)),
-            style: ElevatedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 14),
-              backgroundColor: const Color(0xFF5D7A6B),
+            icon: const Icon(Icons.share, color: Color(0xFF5D7A6B)),
+            label: const Text(
+              '他のアプリへ共有',
+              style: TextStyle(fontSize: 14, color: Color(0xFF5D7A6B)),
+            ),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              side: const BorderSide(color: Color(0xFF5D7A6B)),
             ),
           ),
+        ],
       ],
     );
   }
