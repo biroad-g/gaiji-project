@@ -1,38 +1,66 @@
 <!DOCTYPE html>
-<html>
+<html lang="ja">
 <head>
-  <!--
-    If you are serving your web app in a path other than the root, change the
-    href value below to reflect the base path you are serving from.
-
-    The path provided below has to start and end with a slash "/" in order for
-    it to work correctly.
-
-    For more details:
-    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
-
-    This is a placeholder for base href that will be replaced by the value of
-    the `--base-href` argument provided to `flutter build`.
-  -->
   <base href="/">
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="お寺の住職向け外字（難読漢字）の撮影・保存・管理アプリ">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-  <!-- iOS meta tags & icons -->
+  <!-- PWA / オフライン対応 -->
   <meta name="mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="gaiji_app">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="外字登録">
+  <meta name="theme-color" content="#8B4513">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>gaiji_app</title>
+  <title>外字登録</title>
   <link rel="manifest" href="manifest.json">
+
+  <!-- オフライン時のスプラッシュスタイル -->
+  <style>
+    body {
+      margin: 0;
+      background-color: #FAF5EF;
+    }
+    #offline-notice {
+      display: none;
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #8B4513;
+      color: white;
+      padding: 8px 20px;
+      border-radius: 20px;
+      font-size: 13px;
+      font-family: sans-serif;
+      z-index: 9999;
+      white-space: nowrap;
+    }
+  </style>
 </head>
 <body>
+  <div id="offline-notice">オフラインモードで動作中</div>
+
+  <script>
+    // オフライン検知バナー
+    function updateOnlineStatus() {
+      var notice = document.getElementById('offline-notice');
+      if (notice) {
+        notice.style.display = navigator.onLine ? 'none' : 'block';
+      }
+    }
+    window.addEventListener('online',  updateOnlineStatus);
+    window.addEventListener('offline', updateOnlineStatus);
+    updateOnlineStatus();
+  </script>
+
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>
