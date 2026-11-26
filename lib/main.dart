@@ -1,59 +1,62 @@
 import 'package:flutter/material.dart';
-import 'package:hive_flutter/hive_flutter.dart';
-import 'models/gaiji_entry.dart';
-import 'screens/home_screen.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
+import 'package:provider/provider.dart';
 
-void main() async {
+import 'data/gaiji_repository.dart';
+import 'screens/home_shell.dart';
+import 'state/gaiji_provider.dart';
+import 'theme/app_theme.dart';
+
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  await Hive.initFlutter();
-  Hive.registerAdapter(GaijiEntryAdapter());
-  await Hive.openBox<GaijiEntry>('gaiji_entries');
-  runApp(const GaijiApp());
+
+  final repository = GaijiRepository();
+  await repository.init();
+
+  // 配色（ステータスバー）
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    statusBarIconBrightness: Brightness.light,
+  ));
+
+  runApp(GaijiApp(repository: repository));
 }
 
 class GaijiApp extends StatelessWidget {
-  const GaijiApp({super.key});
+  const GaijiApp({super.key, required this.repository});
+
+  final GaijiRepository repository;
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: '外字登録',
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFF8B4513),
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-        fontFamily: 'NotoSansJP',
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Color(0xFF8B4513),
-          foregroundColor: Colors.white,
-          elevation: 2,
-          centerTitle: true,
-          titleTextStyle: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.bold,
-            color: Colors.white,
-            letterSpacing: 2,
-          ),
-        ),
-        floatingActionButtonTheme: const FloatingActionButtonThemeData(
-          backgroundColor: Color(0xFF8B4513),
-          foregroundColor: Colors.white,
-        ),
-        elevatedButtonTheme: ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: const Color(0xFF8B4513),
-            foregroundColor: Colors.white,
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(8),
-            ),
-          ),
-        ),
+    return ChangeNotifierProvider(
+      create: (_) => GaijiProvider(repository)..load(),
+      child: MaterialApp(
+        title: '古字アルバム',
+        debugShowCheckedModeBanner: false,
+        theme: AppTheme.light,
+        locale: const Locale('ja', 'JP'),
+        supportedLocales: const [Locale('ja', 'JP'), Locale('en', 'US')],
+        localizationsDelegates: const [
+          GlobalMaterialLocalizations.delegate,
+          GlobalWidgetsLocalizations.delegate,
+          GlobalCupertinoLocalizations.delegate,
+        ],
+        builder: (context, child) {
+          // 端末の文字サイズを尊重しつつ、極端な拡大は抑制
+          final mq = MediaQuery.of(context);
+          final scale = mq.textScaler.clamp(
+            minScaleFactor: 0.9,
+            maxScaleFactor: 1.3,
+          );
+          return MediaQuery(
+            data: mq.copyWith(textScaler: scale),
+            child: child ?? const SizedBox.shrink(),
+          );
+        },
+        home: const HomeShell(),
       ),
-      home: const HomeScreen(),
     );
   }
 }

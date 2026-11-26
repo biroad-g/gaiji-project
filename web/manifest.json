@@ -1,14 +1,13 @@
 {
-    "name": "外字登録",
-    "short_name": "外字登録",
-    "description": "お寺の住職向け外字（難読漢字）の撮影・保存・管理アプリ",
+    "name": "古字アルバム",
+    "short_name": "古字アルバム",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#FAF5EF",
-    "theme_color": "#8B4513",
+    "background_color": "#1E2A47",
+    "theme_color": "#1E2A47",
+    "description": "寺院で使われる外字・古字を撮影して登録するオフライン外字アルバム",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
-    "lang": "ja",
     "icons": [
         {
             "src": "icons/Icon-192.png",

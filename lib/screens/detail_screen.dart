@@ -2,630 +2,322 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:share_plus/share_plus.dart';
-import 'package:image/image.dart' as img;
+import 'package:flutter/services.dart';
 import 'package:path_provider/path_provider.dart';
+import 'package:provider/provider.dart';
+import 'package:share_plus/share_plus.dart';
+
 import '../models/gaiji_entry.dart';
-import '../services/database_service.dart';
-import '../services/image_service.dart';
-import '../services/download_service.dart';
+import '../state/gaiji_provider.dart';
+import '../theme/app_theme.dart';
+import 'register_screen.dart';
 
-class DetailScreen extends StatefulWidget {
-  final GaijiEntry entry;
+/// 外字の詳細表示・書き出し・編集・削除
+class DetailScreen extends StatelessWidget {
+  const DetailScreen({super.key, required this.entryId});
 
-  const DetailScreen({super.key, required this.entry});
+  final String entryId;
 
-  @override
-  State<DetailScreen> createState() => _DetailScreenState();
-}
-
-class _DetailScreenState extends State<DetailScreen> {
-  late GaijiEntry _entry;
-  final _nameController = TextEditingController();
-  final _memoController = TextEditingController();
-  String? _selectedCategory;
-  bool _isEditing = false;
-  bool _isSaving = false;
-
-  final List<String> _presetCategories = [
-    '1、なまえ（人・場所・もの）',
-    '2、うごき（動作・様子・程度）',
-    '3、つなぎ（～の・～だ・助詞）',
-    '4、くらし（自然・時間・仏教）',
-    '5、しるし（記号・合体した文字）',
-    '6、梵字',
-    '7、その他',
-  ];
-
-  @override
-  void initState() {
-    super.initState();
-    _entry = widget.entry;
-    _nameController.text = _entry.name;
-    _memoController.text = _entry.memo ?? '';
-    _selectedCategory = _entry.category;
-  }
-
-  @override
-  void dispose() {
-    _nameController.dispose();
-    _memoController.dispose();
-    super.dispose();
-  }
-
-  // 画像を共有
-  Future<void> _shareImage() async {
+  Future<void> _exportPng(BuildContext context, GaijiEntry entry) async {
     try {
+      final bytes = entry.imageBytes;
+      final name = _safeFileName(entry.name);
+      final filename = 'gaiji_$name.png';
+
       if (kIsWeb) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Web環境では共有機能は使えません')),
+        // Web ではブラウザのダウンロードに任せる
+        await Share.shareXFiles(
+          [XFile.fromData(bytes, mimeType: 'image/png', name: filename)],
+          text: '外字「${entry.name}」',
         );
         return;
       }
-      final file = XFile(_entry.imagePath);
+
+      final dir = await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/$filename');
+      await file.writeAsBytes(bytes, flush: true);
+
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('PNGを保存しました: ${file.path}')),
+      );
+    } catch (e) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('書き出しに失敗しました: $e')));
+    }
+  }
+
+  Future<void> _share(BuildContext context, GaijiEntry entry) async {
+    try {
+      final name = _safeFileName(entry.name);
       await Share.shareXFiles(
-        [file],
-        text: '外字：${_entry.name}',
-        subject: '外字画像',
+        [
+          XFile.fromData(
+            entry.imageBytes,
+            mimeType: 'image/png',
+            name: 'gaiji_$name.png',
+          ),
+        ],
+        text:
+            '外字「${entry.name}」${entry.reading.isNotEmpty ? '（${entry.reading}）' : ''}',
       );
     } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('共有に失敗しました: $e'), backgroundColor: Colors.red),
-        );
-      }
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text('共有できませんでした: $e')));
     }
   }
 
-  // -------------------------------------------------------
-  // JPEGとしてエクスポート
-  // Web  : ブラウザのダウンロードダイアログで保存
-  // Mobile: 一時ファイルに書き出し share_plus で共有
-  // -------------------------------------------------------
-  Future<void> _exportAsJpeg() async {
-    // ① 元バイト列を取得
-    Uint8List? sourceBytes;
-    if (kIsWeb) {
-      sourceBytes = _entry.imageBytes;
-    } else if (_entry.imagePath.isNotEmpty) {
-      final f = File(_entry.imagePath);
-      if (f.existsSync()) sourceBytes = await f.readAsBytes();
-    }
-    // imageBytes フォールバック
-    sourceBytes ??= _entry.imageBytes;
-
-    if (sourceBytes == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('画像データが見つかりません'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-      return;
-    }
-
-    // ② 処理中インジケーター表示
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Row(
-            children: [
-              SizedBox(
-                width: 18, height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2, color: Colors.white,
-                ),
-              ),
-              SizedBox(width: 12),
-              Text('JPEGに変換中...'),
-            ],
-          ),
-          duration: Duration(seconds: 10),
-        ),
-      );
-    }
-
-    try {
-      // ③ PNG/任意形式 → JPEG 変換（品質85）
-      final decoded = img.decodeImage(sourceBytes);
-      if (decoded == null) throw Exception('画像のデコードに失敗しました');
-      final jpegBytes = Uint8List.fromList(
-        img.encodeJpg(decoded, quality: 85),
-      );
-
-      // ファイル名: "{名前}_{YYYYMMDD}.jpg"
-      final dateStr =
-          '${_entry.createdAt.year}'
-          '${_entry.createdAt.month.toString().padLeft(2, '0')}'
-          '${_entry.createdAt.day.toString().padLeft(2, '0')}';
-      // ファイル名に使えない文字を除去
-      final safeName = _entry.name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_');
-      final fileName = '${safeName}_$dateStr.jpg';
-
-      if (kIsWeb) {
-        // ④-A Web: ブラウザのダウンロードダイアログ
-        triggerBrowserDownload(jpegBytes, fileName);
-        if (mounted) {
-          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text('「$fileName」をダウンロードしました'),
-              backgroundColor: const Color(0xFF5D7A6B),
-            ),
-          );
-        }
-      } else {
-        // ④-B Mobile: 一時ファイルに保存して share_plus で共有
-        final dir = await getTemporaryDirectory();
-        final filePath = '${dir.path}/$fileName';
-        await File(filePath).writeAsBytes(jpegBytes);
-
-        if (mounted) {
-          ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        }
-        await Share.shareXFiles(
-          [XFile(filePath, mimeType: 'image/jpeg')],
-          text: '外字：${_entry.name}',
-          subject: '外字画像 ($fileName)',
-        );
-      }
-    } catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).hideCurrentSnackBar();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('エクスポートに失敗しました: $e'),
-            backgroundColor: Colors.red,
-          ),
-        );
-      }
-    }
-  }
-
-  // 情報を保存
-  Future<void> _saveChanges() async {
-    if (_nameController.text.trim().isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('名前・読み方を入力してください'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-    setState(() => _isSaving = true);
-    try {
-      final updated = _entry.copyWith(
-        name: _nameController.text.trim(),
-        memo: _memoController.text.trim().isEmpty ? null : _memoController.text.trim(),
-        category: _selectedCategory,
-      );
-      await DatabaseService.instance.updateEntry(updated);
-      setState(() {
-        _entry = updated;
-        _isEditing = false;
-      });
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('更新しました'),
-            backgroundColor: Color(0xFF8B4513),
-          ),
-        );
-      }
-    } finally {
-      setState(() => _isSaving = false);
-    }
-  }
-
-  // 画像を再撮影・差し替え
-  Future<void> _replaceImage() async {
-    final result = await showModalBottomSheet<String>(
-      context: context,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
-      ),
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const SizedBox(height: 8),
-            Container(
-              width: 40, height: 4,
-              decoration: BoxDecoration(
-                color: Colors.grey.shade300,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 16),
-            const Text(
-              '画像を差し替える',
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-            ),
-            const SizedBox(height: 12),
-            if (!kIsWeb)
-              ListTile(
-                leading: const Icon(Icons.camera_alt, color: Color(0xFF8B4513)),
-                title: const Text('カメラで撮影'),
-                onTap: () => Navigator.pop(context, 'camera'),
-              ),
-            ListTile(
-              leading: const Icon(Icons.photo_library, color: Color(0xFF5D7A6B)),
-              title: const Text('アルバムから選択'),
-              onTap: () => Navigator.pop(context, 'gallery'),
-            ),
-            const SizedBox(height: 16),
-          ],
-        ),
-      ),
-    );
-
-    if (result == null) return;
-
-    PickedImage? pickedImage;
-    if (result == 'camera') {
-      pickedImage = await ImageService.instance.pickFromCameraAsPickedImage();
-    } else {
-      pickedImage = await ImageService.instance.pickFromGalleryAsPickedImage();
-    }
-    if (pickedImage == null) return;
-    if (!mounted) return;
-
-    final saved = await ImageService.instance.saveGaijiImageFromBytes(pickedImage.bytes);
-    if (saved == null) return;
-
-    // 旧画像削除（Mobile のみ）
-    await ImageService.instance.deleteImage(_entry.imagePath);
-
-    final updated = _entry.copyWith(
-      imagePath: saved.storageKey,
-      imageBytes: saved.bytes,
-    );
-    await DatabaseService.instance.updateEntry(updated);
-    setState(() => _entry = updated);
-
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('画像を更新しました'),
-        backgroundColor: Color(0xFF8B4513),
-      ),
-    );
-    Navigator.pop(context, true);
+  static String _safeFileName(String name) {
+    final cleaned = name.replaceAll(RegExp(r'[\\/:*?"<>|\s]'), '_');
+    return cleaned.isEmpty ? 'gaiji' : cleaned;
   }
 
   @override
   Widget build(BuildContext context) {
+    final provider = context.watch<GaijiProvider>();
+    final entry = provider.all.where((e) => e.id == entryId).firstOrNull;
+
+    if (entry == null) {
+      return Scaffold(
+        appBar: AppBar(backgroundColor: AppColors.indigo),
+        body: const Center(child: Text('この外字は削除されました')),
+      );
+    }
+
     return Scaffold(
-      backgroundColor: const Color(0xFFFAF5EF),
       appBar: AppBar(
-        title: Text(_isEditing ? '編集中' : _entry.name),
+        backgroundColor: AppColors.indigo,
+        title: const Text('外字の詳細'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, size: 20),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
         actions: [
-          if (!_isEditing) ...[
-            // JPEGエクスポートボタン（Web: ダウンロード / Mobile: 共有）
-            IconButton(
-              icon: const Icon(Icons.download),
-              tooltip: kIsWeb ? 'JPEGでダウンロード' : 'JPEGで共有・保存',
-              onPressed: _exportAsJpeg,
-            ),
-            if (!kIsWeb)
-              IconButton(
-                icon: const Icon(Icons.share),
-                tooltip: '共有',
-                onPressed: _shareImage,
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 19),
+            tooltip: '編集',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(
+                builder: (_) => RegisterScreen(
+                  croppedImage: entry.imageBytes,
+                  editing: entry,
+                ),
               ),
-            IconButton(
-              icon: const Icon(Icons.edit),
-              tooltip: '編集',
-              onPressed: () => setState(() => _isEditing = true),
             ),
-          ] else ...[
-            IconButton(
-              icon: const Icon(Icons.close),
-              tooltip: 'キャンセル',
-              onPressed: () {
-                setState(() {
-                  _isEditing = false;
-                  _nameController.text = _entry.name;
-                  _memoController.text = _entry.memo ?? '';
-                  _selectedCategory = _entry.category;
-                });
-              },
-            ),
-            IconButton(
-              icon: _isSaving
-                  ? const SizedBox(
-                      width: 20, height: 20,
-                      child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2),
-                    )
-                  : const Icon(Icons.check),
-              tooltip: '保存',
-              onPressed: _isSaving ? null : _saveChanges,
-            ),
-          ],
+          ),
+          IconButton(
+            icon: const Icon(Icons.delete_outline, size: 19),
+            tooltip: '削除',
+            onPressed: () => _confirmDelete(context, entry),
+          ),
         ],
       ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _buildImageSection(),
-            const SizedBox(height: 24),
-            _isEditing ? _buildEditSection() : _buildViewSection(),
+      body: ListView(
+        padding: EdgeInsets.fromLTRB(
+            20, 24, 20, 24 + MediaQuery.of(context).padding.bottom),
+        children: [
+          Center(
+            child: Container(
+              width: 220,
+              height: 220,
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(20),
+                border: Border.all(color: AppColors.line),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.indigo.withValues(alpha: 0.08),
+                    blurRadius: 20,
+                    offset: const Offset(0, 8),
+                  ),
+                ],
+              ),
+              padding: const EdgeInsets.all(14),
+              child: Image.memory(entry.imageBytes, fit: BoxFit.contain),
+            ),
+          ),
+          const SizedBox(height: 24),
+          Center(
+            child: Text(
+              entry.name,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                fontFamily: AppTheme.fontSerif,
+                fontSize: 28,
+                letterSpacing: 4,
+                fontWeight: FontWeight.w600,
+                color: AppColors.ink,
+              ),
+            ),
+          ),
+          if (entry.reading.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            Center(
+              child: Text(
+                entry.reading,
+                style: const TextStyle(
+                  fontSize: 13,
+                  letterSpacing: 2,
+                  color: AppColors.inkSoft,
+                ),
+              ),
+            ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildImageSection() {
-    return Column(
-      children: [
-        Container(
-          width: double.infinity,
-          height: 260,
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: const Color(0xFF8B4513), width: 2),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.1),
-                blurRadius: 12,
-                offset: const Offset(0, 4),
+          const SizedBox(height: 14),
+          Center(
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: AppColors.indigo.withValues(alpha: 0.06),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                    color: AppColors.indigo.withValues(alpha: 0.16)),
+              ),
+              child: Text(
+                '${entry.category.mark}  ${entry.category.label}',
+                style: const TextStyle(
+                  fontFamily: AppTheme.fontSerif,
+                  fontSize: 12,
+                  letterSpacing: 1.5,
+                  color: AppColors.indigo,
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 30),
+          if (entry.source.isNotEmpty)
+            _InfoRow(
+              icon: Icons.menu_book_outlined,
+              label: '出典',
+              value: entry.source,
+            ),
+          if (entry.memo.isNotEmpty)
+            _InfoRow(
+              icon: Icons.notes_outlined,
+              label: 'メモ',
+              value: entry.memo,
+            ),
+          _InfoRow(
+            icon: Icons.event_outlined,
+            label: '登録日',
+            value:
+                '${entry.createdAt.year}年${entry.createdAt.month}月${entry.createdAt.day}日',
+          ),
+          const SizedBox(height: 22),
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () => _exportPng(context, entry),
+                  icon: const Icon(Icons.download_outlined, size: 18),
+                  label: const Text('PNG保存'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: OutlinedButton.icon(
+                  onPressed: () => _share(context, entry),
+                  icon: const Icon(Icons.ios_share, size: 18),
+                  label: const Text('共有'),
+                ),
               ),
             ],
           ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(14),
-            child: _buildImageWidget(),
-          ),
-        ),
-        const SizedBox(height: 12),
-        TextButton.icon(
-          onPressed: _replaceImage,
-          icon: const Icon(Icons.swap_horiz, color: Color(0xFF8B4513), size: 18),
-          label: const Text(
-            '画像を差し替える',
-            style: TextStyle(color: Color(0xFF8B4513), fontSize: 13),
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildImageWidget() {
-    // Web: imageBytes
-    if (kIsWeb && _entry.imageBytes != null) {
-      return Image.memory(_entry.imageBytes!, fit: BoxFit.contain);
-    }
-    // Mobile: ファイルパス
-    if (!kIsWeb && _entry.imagePath.isNotEmpty) {
-      final file = File(_entry.imagePath);
-      if (file.existsSync()) {
-        return Image.file(file, fit: BoxFit.contain);
-      }
-    }
-    return const Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(Icons.broken_image, size: 60, color: Colors.grey),
-          SizedBox(height: 8),
-          Text('画像が見つかりません', style: TextStyle(color: Colors.grey)),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildViewSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _InfoCard(icon: Icons.text_fields, label: '名前・読み方', value: _entry.name),
-        const SizedBox(height: 12),
-        if (_entry.category != null) ...[
-          _InfoCard(icon: Icons.category, label: 'カテゴリ', value: _entry.category!),
           const SizedBox(height: 12),
-        ],
-        if (_entry.memo != null && _entry.memo!.isNotEmpty) ...[
-          _InfoCard(icon: Icons.notes, label: 'メモ', value: _entry.memo!),
-          const SizedBox(height: 12),
-        ],
-        _InfoCard(
-          icon: Icons.calendar_today,
-          label: '登録日時',
-          value: _formatDate(_entry.createdAt),
-        ),
-        const SizedBox(height: 24),
-        // JPEGエクスポートボタン（Web: ダウンロード / Mobile: 共有）
-        ElevatedButton.icon(
-          onPressed: _exportAsJpeg,
-          icon: const Icon(Icons.download),
-          label: const Text(
-            kIsWeb ? 'JPEGでダウンロード（PCに保存）' : 'JPEGで共有・保存',
-            style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
-          ),
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-            backgroundColor: const Color(0xFF8B4513),
-          ),
-        ),
-        if (!kIsWeb) ...[
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: _shareImage,
-            icon: const Icon(Icons.share, color: Color(0xFF5D7A6B)),
-            label: const Text(
-              '他のアプリへ共有',
-              style: TextStyle(fontSize: 14, color: Color(0xFF5D7A6B)),
-            ),
-            style: OutlinedButton.styleFrom(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              side: const BorderSide(color: Color(0xFF5D7A6B)),
-            ),
-          ),
-        ],
-      ],
-    );
-  }
-
-  Widget _buildEditSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text(
-          '名前・読み方（必須）',
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF5A4A3A)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _nameController,
-          decoration: _inputDecoration(hint: '名前・読み方', icon: Icons.edit),
-          maxLength: 30,
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'カテゴリ',
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF5A4A3A)),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          runSpacing: 8,
-          children: _presetCategories.map((cat) {
-            final selected = _selectedCategory == cat;
-            return GestureDetector(
-              onTap: () => setState(() {
-                _selectedCategory = selected ? null : cat;
-              }),
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                decoration: BoxDecoration(
-                  color: selected
-                      ? const Color(0xFF8B4513)
-                      : const Color(0xFF8B4513).withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(20),
-                  border: Border.all(color: const Color(0xFF8B4513).withValues(alpha: 0.3)),
-                ),
-                child: Text(
-                  cat,
-                  style: TextStyle(
-                    color: selected ? Colors.white : const Color(0xFF8B4513),
-                    fontSize: 13,
-                  ),
-                ),
+          Center(
+            child: Text(
+              '透過PNGはWord・お便り・法話資料にそのまま貼れます',
+              style: TextStyle(
+                fontSize: 10.5,
+                color: AppColors.inkFaint.withValues(alpha: 0.95),
               ),
-            );
-          }).toList(),
-        ),
-        const SizedBox(height: 16),
-        const Text(
-          'メモ（任意）',
-          style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: Color(0xFF5A4A3A)),
-        ),
-        const SizedBox(height: 6),
-        TextField(
-          controller: _memoController,
-          decoration: _inputDecoration(hint: 'メモを入力', icon: Icons.notes),
-          maxLines: 3,
-          maxLength: 200,
-        ),
-        const SizedBox(height: 24),
-        ElevatedButton.icon(
-          onPressed: _isSaving ? null : _saveChanges,
-          icon: const Icon(Icons.save),
-          label: const Text(
-            '変更を保存する',
-            style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+            ),
           ),
-          style: ElevatedButton.styleFrom(
-            padding: const EdgeInsets.symmetric(vertical: 14),
-          ),
-        ),
-      ],
-    );
-  }
-
-  InputDecoration _inputDecoration({required String hint, required IconData icon}) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: const TextStyle(color: Color(0xFFAA9988)),
-      prefixIcon: Icon(icon, color: const Color(0xFF8B4513), size: 20),
-      filled: true,
-      fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-      border: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Color(0xFFD2B48C)),
-      ),
-      enabledBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Color(0xFFD2B48C)),
-      ),
-      focusedBorder: OutlineInputBorder(
-        borderRadius: BorderRadius.circular(10),
-        borderSide: const BorderSide(color: Color(0xFF8B4513), width: 2),
+        ],
       ),
     );
   }
 
-  String _formatDate(DateTime dt) {
-    return '${dt.year}年${dt.month}月${dt.day}日 '
-        '${dt.hour.toString().padLeft(2, '0')}:'
-        '${dt.minute.toString().padLeft(2, '0')}';
+  Future<void> _confirmDelete(BuildContext context, GaijiEntry entry) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        backgroundColor: AppColors.paper,
+        title: const Text('この外字を削除しますか？',
+            style: TextStyle(fontFamily: AppTheme.fontSerif, fontSize: 17)),
+        content: Text(
+          '「${entry.name}」をアルバムから削除します。この操作は取り消せません。',
+          style: const TextStyle(fontSize: 13, height: 1.7),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(false),
+            child: const Text('やめる'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.of(ctx).pop(true),
+            child: const Text('削除する',
+                style: TextStyle(color: AppColors.shu)),
+          ),
+        ],
+      ),
+    );
+    if (ok == true && context.mounted) {
+      HapticFeedback.mediumImpact();
+      await context.read<GaijiProvider>().remove(entry.id);
+      if (context.mounted) Navigator.of(context).pop();
+    }
   }
 }
 
-class _InfoCard extends StatelessWidget {
+class _InfoRow extends StatelessWidget {
+  const _InfoRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
   final IconData icon;
   final String label;
   final String value;
 
-  const _InfoCard({required this.icon, required this.label, required this.value});
-
   @override
   Widget build(BuildContext context) {
     return Container(
+      margin: const EdgeInsets.only(bottom: 10),
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        border: Border.all(color: const Color(0xFFD2B48C).withValues(alpha: 0.5)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 4,
-            offset: const Offset(0, 1),
-          ),
-        ],
+        color: AppColors.paper,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.line),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, color: const Color(0xFF8B4513), size: 20),
-          const SizedBox(width: 10),
+          Icon(icon, size: 16, color: AppColors.gold),
+          const SizedBox(width: 12),
+          SizedBox(
+            width: 52,
+            child: Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11.5,
+                letterSpacing: 1.0,
+                color: AppColors.inkSoft,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
           Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: const TextStyle(
-                    fontSize: 11, color: Color(0xFFAA9988), fontWeight: FontWeight.w500,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontSize: 15, color: Color(0xFF3A2A1A), fontWeight: FontWeight.w500,
-                  ),
-                ),
-              ],
+            child: Text(
+              value,
+              style: const TextStyle(
+                fontSize: 13,
+                height: 1.7,
+                color: AppColors.ink,
+              ),
             ),
           ),
         ],
