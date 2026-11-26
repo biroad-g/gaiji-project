@@ -61,6 +61,22 @@
     updateOnlineStatus();
   </script>
 
+  <script>
+    // オフライン用キャッシュは、アプリが表示された後に始める。
+    // (起動と同時に大量のデータを扱うと、iPhoneのSafariが落ちることがあるため)
+    (function () {
+      if (!('serviceWorker' in navigator)) return;
+      var done = false;
+      function register() {
+        if (done) return;
+        done = true;
+        navigator.serviceWorker.register('flutter_service_worker.js?v=769203766').catch(function () {});
+      }
+      window.addEventListener('flutter-first-frame', function () { setTimeout(register, 4000); });
+      // 保険: 合図が来なくても20秒後には登録する
+      window.addEventListener('load', function () { setTimeout(register, 20000); });
+    })();
+  </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>
 </html>

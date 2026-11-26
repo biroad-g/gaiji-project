@@ -27,6 +27,15 @@ WEB_SRC = ROOT / "web"
 shutil.copy2(WEB_SRC / "manifest.json", BUILD_WEB / "manifest.json")
 print("manifest.json を上書きしました")
 
+# DISABLE_AUTO_SW: Flutter標準のSW自動登録を止める(登録は index.html 側で表示後に行う)
+bs = BUILD_WEB / "flutter_bootstrap.js"
+b = bs.read_text(encoding="utf-8")
+b2 = re.sub(r"_flutter\.loader\.load\(\{\s*serviceWorkerSettings:\s*\{[^}]*\}\s*\}\);", "_flutter.loader.load({});", b)
+if b2 == b:
+    print("警告: flutter_bootstrap.js の書き換え箇所が見つかりません")
+bs.write_text(b2, encoding="utf-8")
+print("flutter_bootstrap.js: SW自動登録を無効化しました")
+
 # 2. Flutter が出力した RESOURCES を取得
 sw_path = BUILD_WEB / "flutter_service_worker.js"
 original = sw_path.read_text(encoding="utf-8")
@@ -66,16 +75,21 @@ self.addEventListener('install', (event) => {
   self.skipWaiting();
   event.waitUntil((async () => {
     const cache = await caches.open(CACHE_NAME);
-    // 1ファイルずつ保存。失敗したものは後で通常アクセス時に補完される。
-    await Promise.all(URLS.map(async (url) => {
-      try {
-        const res = await fetch(new Request(url, { cache: 'reload' }));
-        if (res && res.ok) await cache.put(url, res);
-      } catch (e) {
-        // オフライン中の更新などは無視
+    // メモリ負担を避けるため、同時に3ファイルずつ順番に保存する(iPhone対策)。
+    // 失敗したものは、通常アクセス時に補完される。
+    const queue = URLS.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const url = queue.shift();
+        try {
+          const res = await fetch(new Request(url, { cache: 'reload' }));
+          if (res && res.ok) await cache.put(url, res);
+        } catch (e) {
+          // オフライン中の更新などは無視
+        }
       }
-    }));
-    // index.html を '/' でも引けるように
+    };
+    await Promise.all([worker(), worker(), worker()]);
     const idx = await cache.match('index.html');
     if (idx) await cache.put('./', idx.clone());
   })());
@@ -85,7 +99,6 @@ self.addEventListener('activate', (event) => {
   event.waitUntil((async () => {
     const keys = await caches.keys();
     await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
-    await self.clients.claim();
   })());
 });
 
