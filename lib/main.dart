@@ -25,7 +25,7 @@ class GaijiApp extends StatelessWidget {
           brightness: Brightness.light,
         ),
         useMaterial3: true,
-        fontFamily: 'serif',
+        fontFamily: 'NotoSansJP',
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF8B4513),
           foregroundColor: Colors.white,

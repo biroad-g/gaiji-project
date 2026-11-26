@@ -1,160 +1,136 @@
 #!/usr/bin/env python3
 """
-post_build.py
-flutter build web --release の後に実行する後処理スクリプト。
+post_build.py  --  flutter build web の後に実行する後処理
 
-1. build/web/flutter_service_worker.js を読み込み、
-   既存の RESOURCES ハッシュマップを抽出してそのまま使いつつ、
-   キャッシュ戦略を Cache-first（全アセットプリキャッシュ）に書き換える。
-
-2. build/web/manifest.json を web/manifest.json で上書きする。
-
-Usage:
-  cd /home/user/flutter_app
+  flutter build web --release --no-web-resources-cdn
   python3 post_build.py
-"""
 
+やること
+  1. manifest.json を web/ のもので上書き
+  2. flutter_service_worker.js を「オフライン優先」の自作版に置き換え
+     - 全ファイルを1つずつ個別にキャッシュ（1つ失敗しても全体は止まらない）
+     - キャッシュ名は全ファイルのハッシュから作る（何か変われば自動で更新）
+     - 画面遷移リクエストは常に index.html をキャッシュから返す
+     - 使わない skwasm 系ファイルはキャッシュしない（容量節約）
+"""
+import hashlib
+import json
 import re
 import shutil
-import json
 from pathlib import Path
 
-BUILD_WEB = Path(__file__).parent / "build" / "web"
-WEB_SRC   = Path(__file__).parent / "web"
+ROOT = Path(__file__).parent
+BUILD_WEB = ROOT / "build" / "web"
+WEB_SRC = ROOT / "web"
 
-# ──────────────────────────────────────────────
-# 1. manifest.json を web/ のもので上書き
-# ──────────────────────────────────────────────
-src_manifest = WEB_SRC / "manifest.json"
-dst_manifest = BUILD_WEB / "manifest.json"
-shutil.copy2(src_manifest, dst_manifest)
-print(f"✅ manifest.json を上書きしました: {dst_manifest}")
+# 1. manifest
+shutil.copy2(WEB_SRC / "manifest.json", BUILD_WEB / "manifest.json")
+print("manifest.json を上書きしました")
 
-# ──────────────────────────────────────────────
-# 2. Service Worker を Cache-first に書き換え
-# ──────────────────────────────────────────────
+# 2. Flutter が出力した RESOURCES を取得
 sw_path = BUILD_WEB / "flutter_service_worker.js"
-original_sw = sw_path.read_text(encoding="utf-8")
+original = sw_path.read_text(encoding="utf-8")
+m = re.search(r"const RESOURCES\s*=\s*(\{[\s\S]*?\});", original)
+if not m:
+    raise SystemExit("RESOURCES が見つかりません。ビルドをやり直してください。")
+resources = json.loads(m.group(1))
 
-# Flutter が生成した RESOURCES オブジェクトをそのまま抽出する
-resources_match = re.search(
-    r"const RESOURCES\s*=\s*(\{[\s\S]*?\});",
-    original_sw
-)
-if not resources_match:
-    print("❌ RESOURCES オブジェクトが見つかりませんでした。SW の書き換えをスキップします。")
-else:
-    resources_block = resources_match.group(1)
+# 実在するファイルだけ・不要ファイルを除外
+SKIP = ("canvaskit/skwasm", "assets/NOTICES")
+urls = []
+for key in resources:
+    if key == "/":
+        continue
+    if any(key.startswith(s) for s in SKIP):
+        continue
+    if not (BUILD_WEB / key).exists():
+        continue
+    urls.append(key)
 
-    # バージョンは main.dart.js のハッシュから生成（毎ビルドで変わる）
-    version_match = re.search(r'"main\.dart\.js":\s*"([a-f0-9]+)"', resources_block)
-    cache_version = version_match.group(1)[:8] if version_match else "v1"
+# index.html 等は SW 自身が書き換えた後のハッシュで版を決める
+# 版は「全ファイルの内容ハッシュ」から作る
+h = hashlib.sha256()
+for u in sorted(urls):
+    h.update(u.encode())
+    h.update((BUILD_WEB / u).read_bytes())
+version = h.hexdigest()[:12]
 
-    new_sw = f"""'use strict';
+total = sum((BUILD_WEB / u).stat().st_size for u in urls)
 
-// ============================================================
-// 外字登録アプリ — オフライン対応 Service Worker
-// キャッシュ戦略: Cache-first（インストール時に全アセット先読み）
-// バージョン: {cache_version}
-// ============================================================
+sw = """'use strict';
+// 外字登録 -- オフライン優先 Service Worker (version: __VERSION__)
+const CACHE_NAME = 'gaiji-cache-__VERSION__';
+const URLS = __URLS__;
 
-const CACHE_NAME = 'gaiji-cache-{cache_version}';
-
-// Flutter が生成したアセット一覧（ハッシュ付き）
-const RESOURCES = {resources_block};
-
-// ──────────────────────────────────────────────
-// install: 全アセットをキャッシュに一括登録
-// ──────────────────────────────────────────────
-self.addEventListener('install', (event) => {{
+self.addEventListener('install', (event) => {
   self.skipWaiting();
-  event.waitUntil(
-    caches.open(CACHE_NAME).then((cache) => {{
-      const urls = Object.keys(RESOURCES).map((key) => {{
-        // ルート '/' は 'index.html' として扱う
-        return key === '/' ? 'index.html' : key;
-      }});
-      // cache: 'reload' でネットワークから強制取得（CDNキャッシュをバイパス）
-      return cache.addAll(
-        urls.map((url) => new Request(url, {{ cache: 'reload' }}))
-      );
-    }}).catch((err) => {{
-      console.warn('[SW] install: 一部アセットのキャッシュ失敗:', err);
-    }})
-  );
-}});
+  event.waitUntil((async () => {
+    const cache = await caches.open(CACHE_NAME);
+    // 1ファイルずつ保存。失敗したものは後で通常アクセス時に補完される。
+    await Promise.all(URLS.map(async (url) => {
+      try {
+        const res = await fetch(new Request(url, { cache: 'reload' }));
+        if (res && res.ok) await cache.put(url, res);
+      } catch (e) {
+        // オフライン中の更新などは無視
+      }
+    }));
+    // index.html を '/' でも引けるように
+    const idx = await cache.match('index.html');
+    if (idx) await cache.put('./', idx.clone());
+  })());
+});
 
-// ──────────────────────────────────────────────
-// activate: 古いキャッシュを削除
-// ──────────────────────────────────────────────
-self.addEventListener('activate', (event) => {{
-  event.waitUntil(
-    caches.keys().then((keys) =>
-      Promise.all(
-        keys
-          .filter((key) => key !== CACHE_NAME)
-          .map((key) => {{
-            console.log('[SW] 古いキャッシュを削除:', key);
-            return caches.delete(key);
-          }})
-      )
-    ).then(() => self.clients.claim())
-  );
-}});
+self.addEventListener('activate', (event) => {
+  event.waitUntil((async () => {
+    const keys = await caches.keys();
+    await Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)));
+    await self.clients.claim();
+  })());
+});
 
-// ──────────────────────────────────────────────
-// fetch: Cache-first 戦略
-//   1. キャッシュにあれば即返す（オフライン対応・高速）
-//   2. なければネットワーク取得してキャッシュに追加
-// ──────────────────────────────────────────────
-self.addEventListener('fetch', (event) => {{
-  if (event.request.method !== 'GET') return;
-
-  const url = new URL(event.request.url);
-
-  // 同一オリジンのリクエストのみ処理
+self.addEventListener('fetch', (event) => {
+  const req = event.request;
+  if (req.method !== 'GET') return;
+  const url = new URL(req.url);
   if (url.origin !== self.location.origin) return;
 
-  // クエリパラメータを除いたキーを生成
-  let key = url.pathname.replace(/^\\//, '');
-  if (!key || key === '') key = '/';
+  event.respondWith((async () => {
+    const cache = await caches.open(CACHE_NAME);
 
-  event.respondWith(
-    caches.open(CACHE_NAME).then((cache) =>
-      cache.match(event.request).then((cached) => {{
-        if (cached) {{
-          // ✅ キャッシュヒット → 即返す
-          return cached;
-        }}
-        // ❌ キャッシュミス → ネットワーク取得
-        return fetch(event.request).then((response) => {{
-          if (response && response.ok) {{
-            cache.put(event.request, response.clone());
-          }}
-          return response;
-        }}).catch(() => {{
-          // ネットワークも失敗 → index.html をフォールバックとして返す
-          if (event.request.headers.get('accept')?.includes('text/html')) {{
-            return cache.match('index.html');
-          }}
-        }});
-      }})
-    )
-  );
-}});
+    // 画面の表示そのもの(ページ遷移)は index.html を即返す
+    if (req.mode === 'navigate') {
+      const page = await cache.match('index.html');
+      if (page) return page;
+    }
 
-// ──────────────────────────────────────────────
-// message: skipWaiting / downloadOffline
-// ──────────────────────────────────────────────
-self.addEventListener('message', (event) => {{
-  if (event.data === 'skipWaiting') {{
-    self.skipWaiting();
-  }}
-}});
+    // それ以外: キャッシュ優先 (?v=xxx などのクエリは無視して照合)
+    const hit = await cache.match(req, { ignoreSearch: true });
+    if (hit) return hit;
+
+    try {
+      const res = await fetch(req);
+      if (res && res.ok) cache.put(req, res.clone());
+      return res;
+    } catch (e) {
+      if (req.mode === 'navigate') {
+        const page = await cache.match('index.html');
+        if (page) return page;
+      }
+      return new Response('オフラインです', {
+        status: 503,
+        headers: { 'Content-Type': 'text/plain; charset=utf-8' },
+      });
+    }
+  })());
+});
+
+self.addEventListener('message', (event) => {
+  if (event.data === 'skipWaiting') self.skipWaiting();
+});
 """
+sw = sw.replace("__VERSION__", version).replace("__URLS__", json.dumps(urls, ensure_ascii=False))
+sw_path.write_text(sw, encoding="utf-8")
 
-    sw_path.write_text(new_sw, encoding="utf-8")
-    print(f"✅ Service Worker を Cache-first に書き換えました (version: {cache_version})")
-    print(f"   キャッシュ対象: {len(re.findall(chr(34), resources_block)) // 2} アセット")
-
-print("\n🎉 post_build.py 完了！")
+print(f"Service Worker を書き換えました  version={version}")
+print(f"  キャッシュ対象 {len(urls)} ファイル / 合計 {total/1024/1024:.1f} MB")

@@ -29178,7 +29178,7 @@ $S:2}
 A.awa.prototype={
 $1(a){var s=A.dS().b
 s=s==null?null:s.canvasKitBaseUrl
-return(s==null?"https://www.gstatic.com/flutter-canvaskit/c29809135135e262a912cf583b2c90deb9ded610/":s)+a},
+return(s==null?"canvaskit/":s)+a},
 $S:138}
 A.a3f.prototype={
 fL(a,b){var s,r=this.a
@@ -86346,7 +86346,7 @@ return A.O($async$BN,r)}}
 A.aeR.prototype={}
 A.MO.prototype={
 U(a){var s=null
-return new A.BG(B.Ic,"\u5916\u5b57\u767b\u9332",A.wH(B.CT,s,A.aD3(B.af,s,s,B.y),new A.uy(A.Ag(s,s,B.y,s,s,s,s,s,s,B.k,s,s,B.Hy,s,new A.cP(A.cf(8),B.u),s,s,s,s,s)),B.I3,"serif",!0),!1,s)}}
+return new A.BG(B.Ic,"\u5916\u5b57\u767b\u9332",A.wH(B.CT,s,A.aD3(B.af,s,s,B.y),new A.uy(A.Ag(s,s,B.y,s,s,s,s,s,s,B.k,s,s,B.Hy,s,new A.cP(A.cf(8),B.u),s,s,s,s,s)),B.I3,"NotoSansJP",!0),!1,s)}}
 A.eP.prototype={
 WF(a,b,c,d,e){var s=this,r=s.d,q=e==null?s.e:e,p=c==null?s.f:c,o=d==null?s.r:d,n=a==null?s.x:a,m=b==null?s.y:b
 return A.az1(n,s.w,r,m,p,o,q)},
